@@ -1,5 +1,7 @@
 logs love live all stars (SIFAS) HTTP traffic through a stub library
 
+![snifas logging requests](pic.png)
+
 architecture is ARM only, as the game only ships with ARM binaries
 
 this is updated as of 2019-10-19. any update that changes the native binary
