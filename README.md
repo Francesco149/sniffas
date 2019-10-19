@@ -43,7 +43,7 @@ exit
 clear logcat and start logging
 
 ```sh
-adb shell logcat -c`
+adb shell logcat -c
 adb shell logcat | grep sniffas
 ```
 
