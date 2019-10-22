@@ -86,8 +86,6 @@ typedef struct {
   char Data[1];
 } Array;
 
-#define min(x, y) ((x) < (y) ? (x) : (y))
-
 static
 void Array_log_ascii(Array* arr) {
   char* buf;
