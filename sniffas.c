@@ -86,9 +86,20 @@ typedef struct {
   char Data[1];
 } Array;
 
+#define min(x, y) ((x) < (y) ? (x) : (y))
+
 static
 void Array_log_ascii(Array* arr) {
-  char* buf = malloc(arr->Length + 1);
+  char* buf;
+  if (!arr) {
+    log("(null array)");
+    return;
+  }
+  buf = malloc(arr->Length + 1);
+  if (!buf) {
+    log("(empty array or OOM)");
+    return;
+  }
   memcpy(buf, arr->Data, arr->Length);
   buf[arr->Length] = 0;
   log(buf);
