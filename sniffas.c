@@ -135,18 +135,76 @@ Array* hooked_get_Bytes(Response* resp) {
   return original_get_Bytes(resp);
 }
 
+typedef struct {
+  char unk[16];
+  char* end;
+  char* start;
+} std_string;
+
+typedef struct {
+  char* data;
+  int length;
+} hash_array;
+
+/* unused */
+static hash_array* (*original_hash)(hash_array* pphash, std_string* path,
+  int type);
+
+hash_array* (*md5)(hash_array* hash, std_string* path);
+hash_array* (*sha1)(hash_array* hash, std_string* path);
+hash_array* (*sha256)(hash_array* hash, std_string* path);
+
 static
-void hook(char* name, char* addr, void** ptrampoline, void* dst) {
+__attribute__((target("thumb")))
+hash_array* hooked_hash(hash_array* hash, std_string* path, int type) {
+  hash_array* res;
+  char buf[1024];
+  char* p = buf;
+  int i;
+  p += sprintf(p, "hash called with type %d on ", type);
+  memcpy(p, path->start, path->end - path->start);
+  p[path->end - path->start] = 0;
+  log(buf);
+  switch (type) {
+    case 0: res = md5(hash, path); break;
+    case 1: res = sha1(hash, path); break;
+    case 2: res = sha256(hash, path); break;
+    default:
+      log("unknown hash!");
+      hash->data = 0;
+      hash->length = 0;
+      return hash;
+  }
+  p = buf;
+  p += sprintf(p, "result: ");
+  for (i = 0; i < res->length; ++i) {
+    p += sprintf(p, "%02x", hash->data[i]);
+  }
+  log(buf);
+  return res;
+}
+
+#define THUMB (1<<1)
+
+static
+void hook(char* name, char* addr, void** ptrampoline, void* dst, int fl) {
   char buf[512];
   int i;
   char *p;
   unsigned* code;
+
+  unsigned absolute_jump =
+    (fl & THUMB) ?
+      0xF000F8DF:  /* thumb mode: ldr pc,[pc]     */
+      0xE51FF004;  /*   arm mode: ldr pc,[pc,#-4] */
 
   p = buf;
   p += sprintf(p, "%s at %p: ", name, addr);
   for (i = 0; i < 8; ++i) {
     p += sprintf(p, "%02x ", addr[i]);
   }
+  log(buf);
+  sprintf(buf, "-> %p", dst);
   log(buf);
 
   /*
@@ -157,9 +215,9 @@ void hook(char* name, char* addr, void** ptrampoline, void* dst) {
    */
   *ptrampoline = malloc(8 + 8);
   code = (unsigned*)*ptrampoline;
-  munprotect(code, 8);
+  munprotect(code, 8 + 8);
   memcpy(code, addr, 8);
-  code[2] = 0xE51FF004; /* ldr pc,[pc,#-4] */
+  code[2] = absolute_jump;
   code[3] = (unsigned)addr + 8;
 
   /*
@@ -168,14 +226,14 @@ void hook(char* name, char* addr, void** ptrampoline, void* dst) {
    */
   code = (unsigned*)addr;
   munprotect(code, 8);
-  code[0] = 0xE51FF004; /* ldr pc,[pc,#-4] */
+  code[0] = absolute_jump;
   code[1] = (unsigned)dst;
 }
 
 static
 void init() {
   char** s;
-  void *original, *stub, *il2cpp, *il2cpp_export;
+  void *original, *stub, *il2cpp, *known_export, *jackpot;
   Dl_info dli;
   char buf[512];
 
@@ -191,21 +249,47 @@ void init() {
   *(void**)&_onInitialize =
     dlsym(original, stringify(java_func(onInitialize)));
 
+  /* libil2cpp.so */
   /* get base address through a known export */
   il2cpp = dlopen("libil2cpp.so", RTLD_LAZY);
-  il2cpp_export = dlsym(il2cpp, "UnityAdsEngineInitialize");
-  dladdr(il2cpp_export, &dli);
+  known_export = dlsym(il2cpp, "UnityAdsEngineInitialize");
+  dladdr(known_export, &dli);
   sprintf(buf, "il2cpp at %p", dli.dli_fbase);
   log(buf);
 
 #define h(name, addr) \
   hook(#name, (char*)dli.dli_fbase + addr, (void**)&original_##name, \
-    hooked_##name)
+    hooked_##name, 0)
 
   h(PostJson, 0x8ff004);
   h(get_Bytes, 0x8ffaf0);
 
 #undef h
+
+  /* libjackpot-core.so */
+  jackpot = dlopen("libjackpot-core.so", RTLD_LAZY);
+  known_export = dlsym(jackpot, "_KJACore_AssetStateLogGenerateV2");
+  dladdr(known_export, &dli);
+  sprintf(buf, "jackpot-core at %p", dli.dli_fbase);
+  log(buf);
+
+#define h(name, addr, fl) \
+  hook(#name, (char*)dli.dli_fbase + addr, (void**)&original_##name, \
+    hooked_##name, fl)
+
+  h(hash, 0x133dc, THUMB);
+
+#undef h
+
+  /* | 1 forces thumb mode */
+#define f(name, addr) \
+  *(int*)&name = ((int)dli.dli_fbase + addr) | 1
+
+  f(md5, 0x13218);
+  f(sha1, 0x132ac);
+  f(sha256, 0x13344);
+
+#undef f
 }
 
 void java_func(onInitialize)(void* env) {

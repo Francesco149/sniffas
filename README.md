@@ -1,8 +1,11 @@
-logs love live all stars (SIFAS) HTTP traffic through a stub library
+logs love live all stars (SIFAS) HTTP traffic through a stub library.
 
 ![snifas logging requests](pic.png)
 
-architecture is ARM only, as the game only ships with ARM binaries
+architecture is arm32 only
+
+also logs
+* files being hashed by libjackpot
 
 this is updated as of 2019-10-19. any update that changes the native binary
 will require me to update it, so be patient if it breaks, or read my
