@@ -131,9 +131,6 @@ Array* (*original_get_Bytes)(Response* resp);
 
 static
 Array* hooked_get_Bytes(Response* resp) {
-  char buf[512];
-  sprintf(buf, "[%p] %p", __builtin_return_address(0), resp);
-  log(buf);
   Array_log_ascii(resp->Bytes);
   return original_get_Bytes(resp);
 }
