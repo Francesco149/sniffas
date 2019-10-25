@@ -37,6 +37,11 @@ void log_s(char* s) { log_n(s, strlen(s)); }
   macro(java_func(stockNativeTouch)) \
   macro(java_func(testOverrideFlgs)) \
   macro(java_func(unlock)) \
+  macro(NativeInputAllowDeviceButtonEvents) \
+  macro(NativeInputGetTimestamp) \
+  macro(NativeInputPollDeviceButtons) \
+  macro(NativeInputPollTouches) \
+  macro(NativeInputSuppressDeviceButtonEvents) \
 
 /*
   I decided to go with absolute jmp's. since arm doesn't allow 32-bit
