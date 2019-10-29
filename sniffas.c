@@ -228,8 +228,8 @@ void init() {
   hook(#name, (char*)dli.dli_fbase + addr, (void**)&original_##name, \
     hooked_##name, 0)
 
-  h(PostJson, 0x8ff004);
-  h(get_Bytes, 0x8ffaf0);
+  h(PostJson, 0x8ff054); /* NetworkAndroid$$PostJson */
+  h(get_Bytes, 0x8ffab0); /* Network.Response$$get_Bytes */
 
 #undef h
 }
