@@ -9,6 +9,8 @@
 #include <sys/sysconf.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <link.h>
 
 #define LOG_MAX 2048
 
@@ -197,6 +199,195 @@ void hook(char* name, char* addr, void** ptrampoline, void* dst, int fl) {
   code[1] = (unsigned)dst;
 }
 
+typedef struct {
+  unsigned magic;
+  int version;
+  int strings;
+  int strings_size;
+  int string_data;
+  int string_data_size;
+  int metadata_strings;
+  int metadata_strings_size;
+  int events;
+  int events_size;
+  int properties;
+  int properties_size;
+  int methods;
+  int methods_size;
+} __attribute__((packed))
+il2cpp_metadata_header_t;
+
+typedef struct {
+  int name; /* index into metadata strings, null terminated */
+  int declaring_type;
+  int return_type;
+  int parameter_start;
+  /*int custom_attrib;*/
+  int generic_container;
+  int index; /* index into methods table */
+  int invoker_index;
+  int delegate_wrapper_index;
+  int rgctx_start_index;
+  int rgctx_count;
+  unsigned token;
+  unsigned short flags;
+  unsigned short iflags;
+  unsigned short slot;
+  unsigned short num_parameters;
+} __attribute__((packed))
+il2cpp_method_definition_t;
+
+typedef struct {
+  int method_pointers_size;
+  unsigned* method_pointers;
+} __attribute__((packed))
+il2cpp_code_registration_t;
+
+unsigned char pattern_v24[] = {
+  0x01, 0x10, 0x9f, 0xe7, /* ldr r1,[pc,r1] */
+  0x00, 0x00, 0x8f, 0xe0, /* add r0,pc,r0 */
+  0x02, 0x20, 0x8f, 0xe0 /* add r2,pc,r2 */
+};
+
+static
+int phdr_callback(struct dl_phdr_info* info, size_t size, void* data) {
+  il2cpp_code_registration_t** pcode_reg = data;
+  int i;
+  char buf[512];
+  if (!strstr(info->dlpi_name, "libil2cpp.so")) return 0;
+  for (i = 0; i < info->dlpi_phnum; ++i) {
+    Elf32_Phdr const* hdr = &info->dlpi_phdr[i];
+    Elf32_Addr start = hdr->p_vaddr;
+    Elf32_Addr end = hdr->p_vaddr + hdr->p_memsz;
+    if (hdr->p_type != PT_LOAD) continue;
+    if (!(hdr->p_flags & PF_X)) continue;
+    Elf32_Addr p;
+    for (p = start; p <= end - sizeof(pattern_v24); p += 1) {
+      if (!memcmp(pattern_v24, (char*)info->dlpi_addr + p, sizeof(pattern_v24))) {
+        /* this is unreadable but it works trust me */
+        Elf32_Addr code_registration =
+          *(Elf32_Addr*)(info->dlpi_addr + p + 0x14) +
+          p + 0xc;
+        Elf32_Addr metadata_registration =
+          *(Elf32_Addr*)(
+            info->dlpi_addr +
+            *(Elf32_Addr*)(info->dlpi_addr + p + 0x10)
+            + p + 0x8
+          ) - info->dlpi_addr;
+        sprintf(buf, "code registration: %08x | "
+          " metadata registration: %08x",
+          code_registration, metadata_registration);
+        log_s(buf);
+        *pcode_reg = (void*)(info->dlpi_addr + code_registration);
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
+
+static
+void hook_from_metadata(void* il2cpp) {
+  char buf[512], buf2[512];
+  char const* p;
+  char* dst;
+  Dl_info dli;
+  FILE* f;
+  int i, num_methods;
+  il2cpp_metadata_header_t hdr;
+  il2cpp_method_definition_t* methods = 0;
+  il2cpp_code_registration_t* code_reg = 0;
+  unsigned* method_pointers;
+  char* metadata_strings = 0;
+  int get_bytes_count = 0, post_json_count = 0;
+  if (!dladdr(hook_from_metadata, &dli)) {
+    log_s("failed to get own path");
+  }
+  // /data/app/com.klab.lovelive.allstars-mi_*/lib/arm/*.so
+  sprintf(buf, "running as %s\n", dli.dli_fname);
+  log_s(buf);
+  for (p = dli.dli_fname; *p && strstr(p, "com.") != p; ++p);
+  // com.klab.lovelive.allstars-mi_*/lib/arm/*.so
+  for (dst = buf; *p && *p != '-'; *dst++ = *p++);
+  *dst = 0;
+  // com.klab.lovelive.allstars
+  sprintf(buf2,
+    "/data/data/%s/files/il2cpp/Metadata/global-metadata.dat", buf);
+  log_s(buf2);
+  f = fopen(buf2, "rb");
+  if (!f) {
+    log_s("failed to open metadata file");
+    return;
+  }
+  if (fread(&hdr, sizeof(hdr), 1, f) != 1) {
+    log_s("failed to read metadata header");
+    goto cleanup;
+  }
+  if (hdr.magic != 0xFAB11BAF) {
+    log_s("not a valid metadata file");
+    goto cleanup;
+  }
+  sprintf(buf, "metadata version %d", hdr.version);
+  log_s(buf);
+  if (fseek(f, hdr.methods, SEEK_SET)) {
+    log_s("failed to seek to methods table");
+    goto cleanup;
+  }
+  methods = malloc(hdr.methods_size);
+  if (!methods) {
+    log_s("failed to alloc method table");
+    goto cleanup;
+  }
+  if (fread(methods, hdr.methods_size, 1, f) != 1) {
+    log_s("failed to read method table");
+    goto cleanup;
+  }
+  dl_iterate_phdr(phdr_callback, &code_reg);
+  if (!code_reg) {
+    log_s("failed to find code registration");
+    goto cleanup;
+  }
+  num_methods = hdr.methods_size / sizeof(il2cpp_method_definition_t);
+  method_pointers = code_reg->method_pointers;
+  metadata_strings = malloc(hdr.metadata_strings_size);
+  if (!metadata_strings) {
+    log_s("failed to alloc metadata strings");
+    goto cleanup;
+  }
+  if (fseek(f, hdr.metadata_strings, SEEK_SET)) {
+    log_s("failed to seek to metadata strings");
+    goto cleanup;
+  }
+  if (fread(metadata_strings, hdr.metadata_strings_size, 1, f) != 1) {
+    log_s("failed to read metadata strings");
+    goto cleanup;
+  }
+  for (i = 0; i < num_methods; ++i) {
+    char* name = metadata_strings + methods[i].name;
+    if (methods[i].index >= 0) {
+      /* TODO: generic methods */
+      /* TODO: get class name for better reliability */
+#define h(name, addr) \
+  hook(#name, (char*)addr, (void**)&original_##name, \
+    hooked_##name, 0)
+      if (!strcmp(name, "get_Bytes")) {
+        /* Network.Response$$get_Bytes */
+        if (get_bytes_count++ != 1) continue;
+        h(get_Bytes, method_pointers[methods[i].index]);
+      } else if (!strcmp(name, "PostJson")) {
+        /* NetworkAndroid$$PostJson */
+        if (post_json_count++ != 1) continue;
+        h(PostJson, method_pointers[methods[i].index]);
+      }
+#undef h
+    }
+  }
+cleanup:
+  free(metadata_strings);
+  free(methods);
+  fclose(f);
+}
+
 static
 void init() {
   char** s;
@@ -224,14 +415,7 @@ void init() {
   sprintf(buf, "il2cpp at %p", dli.dli_fbase);
   log_s(buf);
 
-#define h(name, addr) \
-  hook(#name, (char*)dli.dli_fbase + addr, (void**)&original_##name, \
-    hooked_##name, 0)
-
-  h(PostJson, 0x8ff054); /* NetworkAndroid$$PostJson */
-  h(get_Bytes, 0x8ffab0); /* Network.Response$$get_Bytes */
-
-#undef h
+  hook_from_metadata(il2cpp);
 }
 
 void java_func(onInitialize)(void* env) {
